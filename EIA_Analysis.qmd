@@ -1,0 +1,192 @@
+---
+title: "Using the EIA API "
+author: "Andy Pickering"
+format: html
+editor: visual
+---
+
+```{r}
+
+library(httr)
+library(jsonlite)
+library(ggplot2)
+library(dplyr)
+
+```
+
+*Make a function to retrieve data from API and parse*
+
+```{r}
+
+retrieve_api_data <- function(api_path){
+  
+  response_raw <- httr::GET(url=complete_api_path)
+  
+  if (response_raw$status_code!=200){
+    print(paste("Warning, API returned error code ",response_raw$status_code))
+  }
+  
+  return(response_raw)
+  
+}
+
+
+```
+
+```{r}
+# API key stored in .Renviron
+api_key <- Sys.getenv("EIA_KEY")
+
+# base url for EIA API V2
+api_base <- "https://api.eia.gov/v2/"
+
+complete_api_path <- paste0(api_base,'?api_key=',api_key)
+
+response_raw <- retrieve_api_data(complete_api_path)
+
+response_raw
+
+```
+
+```{r}
+
+response_data <- jsonlite::fromJSON(httr::content(response_raw,"text"))
+response_data
+
+```
+
+```{r}
+
+# list all possible routes (ie datasets)
+eia_routes <- response_data$response$routes$name
+eia_routes
+
+```
+
+*Now look further at electricity; get electricity-specific routes*
+
+```{r}
+
+route <- 'electricity'
+complete_api_path <- paste0(api_base,route,'?api_key=',api_key)
+
+response_raw <- retrieve_api_data(complete_api_path)
+dat <- jsonlite::fromJSON(httr::content(response_raw,"text"))
+
+elec_routes <- dat$response$routes
+elec_routes
+```
+
+```{r}
+
+route <- 'electricity'
+subroute <- "state-electricity-profiles"
+complete_api_path <- paste0(api_base,route,'/',subroute,'/','?api_key=',api_key)
+
+response_raw <- retrieve_api_data(complete_api_path)
+
+dat <- jsonlite::fromJSON(httr::content(response_raw,"text"))
+
+dat$response
+
+```
+
+```{r}
+
+# choose one of the data available from above:
+route <- 'electricity'
+subroute <- "state-electricity-profiles"
+subroute2 <- 'source-disposition'
+data_name <- 'electric-utilities'
+
+#complete_api_path <- paste0(api_base,route,'/',subroute,'/',data_name,'/','data/','?frequency=annual&data[0]=electric-utilities','&api_key=',api_key)
+
+complete_api_path <- paste0(api_base,route,'/',subroute,'/',subroute2,'/','data/','?&data[0]=',data_name,'&api_key=',api_key)
+
+complete_api_path
+
+#https://api.eia.gov/v2/electricity/state-electricity-profiles/source-disposition/data/?frequency=annual&data[0]=electric-utilities&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000
+
+
+response_raw <- retrieve_api_data(complete_api_path)
+
+dat <- jsonlite::fromJSON(httr::content(response_raw,"text"))
+dat
+
+```
+
+```{r}
+
+df <- dat$response$data
+
+df %>% 
+  filter(state=='CO') %>% 
+  ggplot(aes(period,`electric-utilities`))+
+  geom_line()+
+  xlab("Year")+
+  ylab(df$`electric-utilities-units`[1])+
+  ggtitle("Net Electricty Generation by Electric Utilities in CO")
+  
+
+```
+
+```{r}
+
+
+# choose one of the data available from above:
+route <- 'electricity'
+subroute <- "electric-power-operational-data"
+#subroute2 <- 'source-disposition'
+#data_name <- 'total-consumption-btu'
+data_name <- 'generation'
+
+complete_api_path <- paste0(api_base,route,'/',subroute,'/','data/','?&data[0]=',data_name,'&facets[sectorid][]=1&facets[location][]=CO','&api_key=',api_key)
+
+
+
+complete_api_path
+
+#https://api.eia.gov/v2/electricity/electric-power-operational-data/data/?frequency=monthly&data[0]=total-consumption-btu&facets[fueltypeid]
+
+
+response_raw <- retrieve_api_data(complete_api_path)
+
+dat <- jsonlite::fromJSON(httr::content(response_raw,"text"))
+dat
+
+```
+
+```{r}
+
+df <- dat$response$data
+df$date <- lubridate::ym(df$period)
+
+df %>% 
+  filter(location=='CO') %>% View()
+
+df %>% 
+  filter(location=='CO') %>% 
+  filter(sectorid==1) %>% 
+  filter(fueltypeid=='AOR') %>% 
+  ggplot(aes(date,`total-consumption-btu`))+
+  geom_line()+
+  xlab("Year")#+
+#  ylab(df$`electric-utilities-units`[1])+
+#  ggtitle("Net Electricty Generation by Electric Utilities in CO")
+  
+```
+
+```{r}
+
+df %>% 
+  filter(location=='CO') %>% 
+  filter(sectorid==1) %>% 
+  filter(fueltypeid %in% c('ALL','COW','SUN','WND','NG')) %>% 
+  ggplot(aes(date,generation,group=fueltypeid))+
+  geom_line(aes(color=fueltypeid))+
+  geom_smooth(aes(color=fueltypeid))+
+  xlab("Date")+
+  ylab(paste0('Generation [',df$`generation-units`[1],']'))+
+  ggtitle("Electricty Generation in CO by Fuel Type")
+
+```

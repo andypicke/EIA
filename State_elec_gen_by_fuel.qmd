@@ -1,0 +1,183 @@
+---
+title: "State Electricity Generation By Fuel Type"
+author: "Andy Pickering"
+format: html
+editor: visual
+---
+
+## 
+
+```{r}
+
+library(httr)
+library(jsonlite)
+library(ggplot2)
+library(dplyr)
+
+```
+
+*Make a function to retrieve data from API and parse*
+
+```{r}
+
+retrieve_api_data <- function(api_path){
+  
+  response_raw <- httr::GET(url=complete_api_path)
+  
+  if (response_raw$status_code!=200){
+    print(paste("Warning, API returned error code ",response_raw$status_code))
+  }
+  
+  return(response_raw)
+  
+}
+
+
+```
+
+```{r}
+# API key stored in .Renviron
+api_key <- Sys.getenv("EIA_KEY")
+
+# base url for EIA API V2
+api_base <- "https://api.eia.gov/v2/"
+
+```
+
+
+
+```{r}
+
+
+# choose one of the data available from above:
+route <- 'electricity'
+subroute <- "electric-power-operational-data"
+data_name <- 'generation'
+
+# monthly?
+#complete_api_path <- paste0(api_base,route,'/',subroute,'/','data/','?&data[0]=',data_name,'&facets[sectorid][]=1&facets[location][]=CO','&api_key=',api_key)
+
+# **sector id 98= electric power (gives results much closer to https://afdc.energy.gov/vehicles/electric_emissions.html)
+
+# annual
+complete_api_path <- paste0(api_base,route,'/',subroute,'/','data/','?frequency=annual&data[0]=',data_name,'&facets[sectorid][]=98&facets[location][]=CO','&api_key=',api_key)
+
+#https://api.eia.gov/v2/electricity/electric-power-operational-data/data/?frequency=annual&data[0]=generation&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000
+
+complete_api_path
+
+
+
+response_raw <- retrieve_api_data(complete_api_path)
+
+dat <- jsonlite::fromJSON(httr::content(response_raw,"text"))
+dat
+
+```
+
+# note response limited to 5000 entries, might be missing data?
+```{r}
+
+df <- dat$response$data
+#df$date <- lubridate::ym(df$period)
+df$date <- df$period
+
+df %>% 
+  filter(location=='CO') %>% View()
+
+```
+
+
+
+
+```{r}
+
+df %>% 
+  filter(location=='CO') %>% 
+  filter(sectorid==1) %>% 
+  filter(fueltypeid %in% c('ALL','COW','SUN','WND','NG')) %>% 
+  ggplot(aes(date,generation,group=fueltypeid))+
+  geom_line(aes(color=fueltypeid))+
+  geom_smooth(aes(color=fueltypeid))+
+  xlab("Date")+
+  ylab(paste0('Generation [',df$`generation-units`[1],']'))+
+  ggtitle("Electricty Generation in CO by Fuel Type")
+
+```
+
+
+# compute percent of total generation by fuel type
+## probably want to pivot data frame 1st to wide, compute percents, then pivot back?
+```{r}
+
+df_wide <- df %>% 
+  select(date,location,generation,fueltypeid) %>% 
+  tidyr::pivot_wider(names_from = fueltypeid, values_from = generation) 
+
+head(df_wide)
+```
+
+
+```{r}
+
+df_perc <- df_wide %>% 
+  mutate(perc_SUN=SUN/ALL*100,
+         perc_WND=WND/ALL*100,
+         perc_COW=COW/ALL*100,
+         perc_NG=NG/ALL*100,
+         perc_HYD=(HPS+HYC)/ALL*100,
+         perc_BIO=BIO/ALL*100) %>% 
+  select(date,location,starts_with('perc_'))
+  
+head(df_perc)
+
+df_perc_long <- df_perc %>% 
+  tidyr::pivot_longer(cols = starts_with('perc_'))
+
+head(df_perc_long)
+
+df_perc_long %>% 
+  ggplot(aes(date,value,group=name))+
+  geom_line(aes(color=`name`))
+
+```
+
+
+try to recreate pie chart of percent of fuel types for generation?
+```{r}
+
+df_perc_long %>% 
+  filter(date=="2021") %>% View()
+
+
+df_perc_long %>% 
+  filter(date=="2021") %>% 
+  ggplot(aes(x="",y=value,fill=name))+
+  geom_bar(stat="identity", width=1) +
+  coord_polar("y", start=0) +
+  theme_void()+
+  geom_text(aes(label = paste0(round(value), "%")), position = position_stack(vjust=0.5)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+
+
+
+```
+
+
+```{r}
+
+library(plotly)
+
+data <- df_perc_long %>% 
+  filter(date=="2021") %>% 
+  mutate(value=round(value))
+
+fig <- plot_ly(data, labels = ~name, values = ~value, type = 'pie')
+fig <- fig %>% layout(title = 'Electricity Generation By Fuel Type for Colorado 2021',
+         xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+         yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+
+fig
+
+```
+
