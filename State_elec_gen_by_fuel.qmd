@@ -1,22 +1,42 @@
 ---
 title: "State Electricity Generation By Fuel Type"
 author: "Andy Pickering"
-format: html
-editor: visual
+format: 
+  html:
+    code-link: true
+    code-fold: show
+date: "2023-07-11"
+categories: [energy, EIA, R, visualization, API]
+draft: true
 ---
 
-## 
+## Introduction
+
+Electricity generation is a major source of carbon emissions, and tranisitioning to cleaner and/or renewable sources of power generation is important to lowering greenhouse gas emissions and limiting the effects of climate change (as well as other benefits such as improving air quality). With the increase in electirication (such as electric vehicles and heat pumps), transitioning to lower-carbon sources of electricity generation is even more important.
+
+In general electric vehicles produce less net emissions than traditional gas-powered vehicles, but the savings depends on several factors including how the electricity used to charge an EV is produced. The [Alternative Fuels Data Center](https://afdc.energy.gov/) has a nice [tool](https://afdc.energy.gov/vehicles/electric_emissions.html) showing the breakdown of electricity generation fuel sources by state and the resulting effects on emissions.
+
+I am interested in analyzing trends in electricity generation fuel sources, and this post outlines the first step: Using data from the [EIA](https://www.eia.gov/opendata/) to calculate and reproduce the state-level breakdown in the [AFDC tool](https://afdc.energy.gov/vehicles/electric_emissions.html).
+
+Some of the technical methods/topics involved in this include:
+
+-   Retrieving data from an API
+
+-   Pivoting dataframes between *long* and *wide* formats
+
+-   Plotting data using ggplot2 and plotly
 
 ```{r}
-
+#| code-fold: true
 library(httr)
 library(jsonlite)
 library(ggplot2)
-library(dplyr)
+theme_set(theme_grey(base_size = 15))
+suppressPackageStartupMessages(library(dplyr))
 
 ```
 
-*Make a function to retrieve data from API and parse*
+I'm going to make a simple little function to retrieve data from the API, that will make things a little tidier and warn me if the API call returns an error code.
 
 ```{r}
 
@@ -32,145 +52,151 @@ retrieve_api_data <- function(api_path){
   
 }
 
-
 ```
 
+The data I will use is from the EIA API. It is the annual electric power generation by state:
+
+-   electricity
+
+-   electric-power-operational-data
+
+-   generation
+
 ```{r}
+
 # API key stored in .Renviron
 api_key <- Sys.getenv("EIA_KEY")
 
 # base url for EIA API V2
 api_base <- "https://api.eia.gov/v2/"
 
-```
-
-
-
-```{r}
-
-
-# choose one of the data available from above:
 route <- 'electricity'
 subroute <- "electric-power-operational-data"
 data_name <- 'generation'
 
-# monthly?
-#complete_api_path <- paste0(api_base,route,'/',subroute,'/','data/','?&data[0]=',data_name,'&facets[sectorid][]=1&facets[location][]=CO','&api_key=',api_key)
+state <- 'CO'
 
+# was using sector id 1 (electric utilities), but 
 # **sector id 98= electric power (gives results much closer to https://afdc.energy.gov/vehicles/electric_emissions.html)
 
+sector_id <- 98
+
 # annual
-complete_api_path <- paste0(api_base,route,'/',subroute,'/','data/','?frequency=annual&data[0]=',data_name,'&facets[sectorid][]=98&facets[location][]=CO','&api_key=',api_key)
-
-#https://api.eia.gov/v2/electricity/electric-power-operational-data/data/?frequency=annual&data[0]=generation&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000
-
-complete_api_path
-
-
+complete_api_path <- paste0(api_base,route,'/',subroute,'/','data/','?frequency=annual&data[0]=',data_name,'&facets[sectorid][]=',sector_id,'&facets[location][]=',state,'&api_key=',api_key)
 
 response_raw <- retrieve_api_data(complete_api_path)
 
 dat <- jsonlite::fromJSON(httr::content(response_raw,"text"))
-dat
+#str(dat)
 
-```
-
-# note response limited to 5000 entries, might be missing data?
-```{r}
 
 df <- dat$response$data
-#df$date <- lubridate::ym(df$period)
-df$date <- df$period
-
-df %>% 
-  filter(location=='CO') %>% View()
-
+df$year <- df$period
+df <- df %>% select(-c(period,stateDescription))
+head(df)
 ```
 
-
-
+## Plot total electricity generation by fuel type
 
 ```{r}
 
 df %>% 
-  filter(location=='CO') %>% 
-  filter(sectorid==1) %>% 
   filter(fueltypeid %in% c('ALL','COW','SUN','WND','NG')) %>% 
-  ggplot(aes(date,generation,group=fueltypeid))+
-  geom_line(aes(color=fueltypeid))+
-  geom_smooth(aes(color=fueltypeid))+
-  xlab("Date")+
+  ggplot(aes(year,generation,group=fueltypeid))+
+  geom_line(aes(color=fueltypeid),linewidth=1.5)+
+#  geom_smooth(aes(color=fueltypeid))+
+  xlab("Year")+
   ylab(paste0('Generation [',df$`generation-units`[1],']'))+
   ggtitle("Electricty Generation in CO by Fuel Type")
 
 ```
 
+## Compute percent of total generation by fuel type
 
-# compute percent of total generation by fuel type
-## probably want to pivot data frame 1st to wide, compute percents, then pivot back?
+Now I want to compute the percent of total generation that each fuel type makes up. Currently the dataframe has a row for each year and fuel type. To make it easier to compute, I need to pivot the data frame to a wide format, so there is one row for each year and a column for each fuel type. Then I can simply divide the value for each fuel type by the total.
+
+::: {.callout-note}
+You may be familiar with the *pivot* functions under different names. In the *tidyr* package, *pivot_wider* and *pivot_longer* are newer versions of *spread* and *gather*, respectively.
+:::
+
 ```{r}
 
 df_wide <- df %>% 
-  select(date,location,generation,fueltypeid) %>% 
+  select(year,location,generation,fueltypeid) %>% 
   tidyr::pivot_wider(names_from = fueltypeid, values_from = generation) 
 
 head(df_wide)
 ```
 
+Compute percent of total for fuel types
 
 ```{r}
 
 df_perc <- df_wide %>% 
-  mutate(perc_SUN=SUN/ALL*100,
-         perc_WND=WND/ALL*100,
-         perc_COW=COW/ALL*100,
-         perc_NG=NG/ALL*100,
-         perc_HYD=(HPS+HYC)/ALL*100,
-         perc_BIO=BIO/ALL*100) %>% 
-  select(date,location,starts_with('perc_'))
+  mutate(perc_SUN=round(SUN/ALL*100,2),
+         perc_WND=round(WND/ALL*100,2),
+         perc_COW=round(COW/ALL*100,2),
+         perc_NG=round(NG/ALL*100,2),
+         perc_HYD=round((HPS+HYC)/ALL*100,2),
+         perc_BIO=round(BIO/ALL*100),2) %>% 
+  select(year,location,starts_with('perc_'))
   
 head(df_perc)
+
+
+```
+
+Now that I've computed the percent for each fuel type, I want to pivot back to a long format that will make plotting easier.
+
+```{r}
 
 df_perc_long <- df_perc %>% 
   tidyr::pivot_longer(cols = starts_with('perc_'))
 
 head(df_perc_long)
 
-df_perc_long %>% 
-  ggplot(aes(date,value,group=name))+
-  geom_line(aes(color=`name`))
-
 ```
 
+## Timeseries Plot
 
-try to recreate pie chart of percent of fuel types for generation?
 ```{r}
 
 df_perc_long %>% 
-  filter(date=="2021") %>% View()
+  ggplot(aes(year,value,group=name))+
+  geom_line(aes(color=`name`),linewidth=1.5)+
+  xlab('Year')+
+  ylab("Percent of Total Generation")
 
+```
+
+# ggplot piechart
+
+try to recreate pie chart of percent of fuel types for generation?
+
+```{r}
 
 df_perc_long %>% 
-  filter(date=="2021") %>% 
+  filter(year=="2021") %>% 
   ggplot(aes(x="",y=value,fill=name))+
   geom_bar(stat="identity", width=1) +
   coord_polar("y", start=0) +
   theme_void()+
-  geom_text(aes(label = paste0(round(value), "%")), position = position_stack(vjust=0.5)) +
+  geom_text(aes(label = paste0(round(value), "%")),
+            position = position_stack(vjust=0.5)) +
   labs(x = NULL, y = NULL, fill = NULL)
 
 
 
 ```
 
+# Plotly version
 
 ```{r}
 
-library(plotly)
+suppressPackageStartupMessages(library(plotly))
 
 data <- df_perc_long %>% 
-  filter(date=="2021") %>% 
-  mutate(value=round(value))
+  filter(year=="2021") 
 
 fig <- plot_ly(data, labels = ~name, values = ~value, type = 'pie')
 fig <- fig %>% layout(title = 'Electricity Generation By Fuel Type for Colorado 2021',
@@ -181,3 +207,25 @@ fig
 
 ```
 
+Would a bar chart be better?
+
+```{r}
+
+df_perc_long %>% 
+  filter(year=="2021") %>% 
+  mutate(name=forcats::fct_reorder(name,value)) %>% 
+  ggplot(aes(name,value))+
+  geom_col(aes(fill=name))+
+  xlab("Fuel Type")+
+  ylab("Percent of Total Electric Generation")+
+  coord_flip()
+
+
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
