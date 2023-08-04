@@ -1,0 +1,316 @@
+---
+title: "Electricity Generation By Fuel Type"
+author: "Andy Pickering"
+date: "2023-08-04"
+format: html
+editor: visual
+toc: true
+---
+
+# Overview
+
+Building on my blog post where I calculated the fractions of electricity generation by fuel source for Colorado and compared to those on the AFDC tool.
+
+My goal now is to generalize that analysis to work for any state, and look in more detail at other states, changes over time, and the US as a whole.
+
+# Getting Data
+
+```{r Load Libraries}
+#| code-fold: true
+library(httr)
+library(jsonlite)
+library(ggplot2)
+theme_set(theme_grey(base_size = 15)) # make the default font sizes etc a little bigger
+suppressPackageStartupMessages(library(dplyr))
+library(forcats)
+suppressPackageStartupMessages(library(plotly))
+library(DT)
+```
+
+I'm going to make a simple little function to retrieve data from the API, that will make things a little tidier and warn me if the API call returns an error code.
+
+```{r}
+
+retrieve_api_data <- function(api_path) {
+  response_raw <- httr::GET(url = complete_api_path)
+
+  if (response_raw$status_code != 200) {
+    print(paste("Warning, API returned error code ", response_raw$status_code))
+  }
+
+  return(response_raw)
+}
+```
+
+## Download data for 1 state
+
+The data I will use is the annual electric power generation by state from the [EIA API](https://www.eia.gov/opendata/browser/). I'm going to just look at data for Colorado for now, and I'm looking at sector id 98: electric power.
+
+```{r}
+# API key stored in .Renviron
+api_key <- Sys.getenv("EIA_KEY")
+
+# base url for EIA API V2
+api_base <- "https://api.eia.gov/v2/"
+
+route <- "electricity"
+subroute <- "electric-power-operational-data"
+data_name <- "generation"
+
+state <- "CO"
+
+# sector id 98= electric power
+sector_id <- 98
+
+# annual
+complete_api_path <- paste0(
+  api_base, route, "/", subroute, "/", "data/",
+  "?frequency=annual&data[0]=", data_name,
+  "&facets[sectorid][]=", sector_id,
+  "&facets[location][]=", state,
+  "&api_key=", api_key
+)
+
+# get the data from the API
+response_raw <- retrieve_api_data(complete_api_path)
+
+# convert from JSON
+dat <- jsonlite::fromJSON(httr::content(response_raw, "text"))
+
+if (length(dat$response$warnings)>0){
+  print("Warning returned with data")
+  print(dat$response$warnings)
+}
+
+# extract the dataframe
+df <- dat$response$data
+
+# rename a column and drop some extra unnecessary columns
+df <- df %>%
+  rename(year = period) %>%
+  select(-c(location, sectorid, sectorDescription, stateDescription))
+
+head(df)
+```
+
+Note that some of the *fueltype* categories are subsets of, or overlap with, other categories. For example *COW* is all coal products, which includes SUB (subbituminous coal) and BIT (bituminous coal). For this analysis I will look at the following categories:
+
+-   ALL
+
+-   COW (all coal)
+
+-   Natural Gas
+
+-   WND : Wind
+
+-   SUN : Solar
+
+-   HYC: conventional hydroelectric
+
+-   BIO: BiomassPlot total electricity generation by fuel type
+
+## Get data for all states
+
+-   note that the API will only return 5000 rows for a single request, so if we request all states for all time, we exceed that limit. The API will return a warning: *dat\$response\$warnings*
+
+    -   I'll try just getting 2 years of data for all states for now, which returns less than 5000 rows. To get all the data, i'll have to do multiple requests with an offset specified.
+
+-   Note that not specifiying a location returns all states, as well as regions and US total.
+
+```{r}
+# API key stored in .Renviron
+api_key <- Sys.getenv("EIA_KEY")
+
+# base url for EIA API V2
+api_base <- "https://api.eia.gov/v2/"
+
+route <- "electricity"
+subroute <- "electric-power-operational-data"
+data_name <- "generation"
+
+#state <- "CO"
+
+# sector id 98= electric power
+sector_id <- 98
+
+# annual
+complete_api_path <- paste0(
+  api_base, route, "/", subroute, "/", "data/",
+  "?frequency=annual&data[0]=", data_name,
+  "&facets[sectorid][]=", sector_id,
+  "&start=2020-01&end=2023-01",
+  "&api_key=", api_key
+)
+
+# get the data from the API
+response_raw <- retrieve_api_data(complete_api_path)
+
+# convert from JSON
+dat <- jsonlite::fromJSON(httr::content(response_raw, "text"))
+
+if (length(dat$response$warnings)>0){
+  print("Warning returned with data")
+  print(dat$response$warnings)
+}else{
+  print("No warnings")
+}
+
+
+# extract the dataframe
+df <- dat$response$data
+
+# rename a column and drop some extra unnecessary columns
+df <- df %>%
+  rename(year = period)# %>%
+#  select(-c(location, sectorid, sectorDescription, stateDescription))
+
+head(df)
+```
+
+```{r }
+
+unique(df$fuelTypeDescription)
+
+```
+
+```{r}
+
+df %>% 
+  filter(location == "MA",
+         year == 2021) %>% 
+  arrange(desc(generation)) %>% 
+  View()
+
+
+```
+
+```{r}
+
+state <- "NH"
+wh_year <- 2021
+
+df %>% 
+  filter(location == state,
+         year == wh_year) %>% 
+  mutate(fuelTypeDescription = forcats::fct_reorder(fuelTypeDescription, generation)) %>% 
+  ggplot() +
+  geom_col(aes(fuelTypeDescription, generation)) +
+  coord_flip() +
+  ggtitle(paste0(wh_year, "Annual Elec. Gen. in ",state)) +
+  xlab("Fuel Type") +
+  ylab(paste0("Generation (", df$`generation-units`, ")" ))
+
+
+```
+
+```{r}
+
+state_totals_2021 <- df %>% 
+  filter(fueltypeid == "ALL",
+         year == 2021) %>% 
+  arrange(desc(generation)) %>% 
+  select(location, stateDescription, fueltypeid, generation, `generation-units`) 
+
+View(state_totals_2021)
+
+```
+
+choropleth map of total generation by state
+
+```{r state total choropleth}
+
+library(tigris)
+library(leaflet)
+options(tigris_use_cache = TRUE)
+states <- tigris::states(cb = TRUE)
+
+df2 <- states %>% 
+  left_join(state_totals_2021, by = c("NAME" = "stateDescription")) %>% 
+  filter(!is.na(generation),
+         STUSPS != "DC",
+         STUSPS != "PR")
+
+pal_elec <- leaflet::colorNumeric(palette = "viridis",
+                                 domain = df2$generation)
+
+leaflet() %>% 
+  leaflet::addPolygons(data = df2,
+                       weight = 1,
+                       color = "black",
+                       popup = paste(df2$NAME, "<br>",
+                            round(df2$generation), df2$`generation-units` ),
+                       fillColor = ~pal_elec(generation),
+                       fillOpacity = 0.6) %>% 
+  addLegend(data = df2,
+            pal = pal_elec,
+            values = ~generation,
+            opacity = 1,
+            title = "Total generation"
+            )
+
+```
+
+```{r}
+
+df %>% 
+  filter(fueltypeid == "ALL",
+         year == 2021,
+         location != "US"
+         ) %>% 
+  arrange(desc(generation)) %>% 
+  select(stateDescription, fueltypeid, generation, `generation-units`) %>% 
+  mutate(stateDescription = forcats::fct_reorder(stateDescription, generation)) %>% 
+  ggplot(aes(stateDescription, generation)) +
+  geom_col() +
+  coord_flip()
+
+```
+
+# Computing percent of total generation by fuel type
+
+-   One issue is that the fuel types present for each state might differ (for example Colorado doesn't have any nuclear generation, and that field is not returned for Colorado). In the blog post I just ignored nuclear, but if I am comparing states I will want to have a zero value for nuclear even if a state doesn't have any.
+
+Now I want to compute the percent of total generation that each fuel type makes up. Currently the dataframe has a row for each year and fuel type. To make it easier to compute, I need to pivot the data frame to a wide format, so there is one row for each year and a column for each fuel type. Then I can simply divide the value for each fuel type by the total.
+
+After pivoting to a wider format, the dataframe has one row for each year and a column for each fuel type:
+
+```{r Pivot wider}
+df_wide <- df %>%
+  select(year, generation, fueltypeid) %>%
+  tidyr::pivot_wider(names_from = fueltypeid, values_from = generation)
+
+head(df_wide)
+```
+
+Now I can compute the percent of total generation for each fuel type:
+
+```{r Calculate Percentages}
+df_perc <- df_wide %>%
+  mutate(
+    perc_Solar = round(SUN / ALL * 100, 2),
+    perc_Wind = round(WND / ALL * 100, 2),
+    perc_Coal = round(COW / ALL * 100, 2),
+    perc_NaturalGas = round(NG / ALL * 100, 2),
+    perc_Hydro = round((HPS + HYC) / ALL * 100, 2),
+    perc_Biomass = round(BIO / ALL * 100, 2),
+  ) %>%
+  select(year, starts_with("perc_"))
+
+head(df_perc)
+```
+
+Now that I've computed the percent for each fuel type, I will pivot back to a long format that will make plotting easier. In this format there is a row for each year and fueltype, and when I plot the data I can simply specify the FuelType column as the color or fill:
+
+```{r Pivot longer}
+df_perc_long <- df_perc %>%
+  tidyr::pivot_longer(
+    cols = starts_with("perc_"),
+    names_prefix = "perc_",
+    names_to = "FuelType",
+    values_to = "percent"
+  )
+
+head(df_perc_long)
+```
+
+## 
